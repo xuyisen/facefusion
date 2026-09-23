@@ -2,18 +2,19 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
+import numpy
 from tqdm import tqdm
 
 from facefusion import ffmpeg, logger, process_manager, state_manager, translator
-from facefusion.audio import count_audio_frame_total
+from facefusion.audio import count_audio_frame_total, create_empty_audio_frame, get_audio_frame, get_voice_frame
 from facefusion.common_helper import get_first
 from facefusion.content_analyser import analyse_image
-from facefusion.filesystem import filter_audio_paths, is_video, move_file
+from facefusion.filesystem import filter_audio_paths, is_image, is_video, move_file
 from facefusion.processors.core import get_processors_modules
 from facefusion.temp_helper import clear_temp_directory, get_temp_file_path, get_temp_frame_sequence_paths
 from facefusion.time_helper import calculate_end_time
 from facefusion.types import ErrorCode
-from facefusion.vision import detect_image_resolution, pack_resolution, restrict_image_resolution, scale_resolution
+from facefusion.vision import conditional_merge_vision_mask, detect_image_resolution, extract_vision_mask, pack_resolution, read_static_image, read_static_images, restrict_image_resolution, scale_resolution, write_image
 from facefusion.workflows.core import conditional_process_temp_frame, is_process_stopping, prepare_temp
 
 
@@ -22,10 +23,8 @@ def process(start_time : float) -> ErrorCode:
 	[
 		setup,
 		prepare_image,
-		process_frames,
-		merge_video,
-		replace_audio,
-		partial(finalize_video, start_time)
+		process_image,
+		partial(finalize_image, start_time)
 	]
 	process_manager.start()
 
@@ -62,83 +61,66 @@ def prepare_image() -> ErrorCode:
 	return 0
 
 
-def process_frames() -> ErrorCode:
+def process_image() -> ErrorCode:
+	temp_image_path = get_temp_file_path(state_manager.get_item('target_path'))
+	reference_vision_frame = read_static_image(temp_image_path)
+	source_vision_frames = read_static_images(state_manager.get_item('source_paths'))
 	source_audio_path = get_first(filter_audio_paths(state_manager.get_item('source_paths')))
-	audio_frame_total = count_audio_frame_total(source_audio_path, 25.0)
-	output_video_fps = state_manager.get_item('output_video_fps')
-	temp_frame_paths = get_temp_frame_sequence_paths(state_manager.get_item('target_path'), audio_frame_total, '%08d')
+	source_audio_frame = get_audio_frame(source_audio_path, 25.0, 0)
+	source_voice_frame = get_voice_frame(source_audio_path, 25.0, 0)
+	target_vision_frame = read_static_image(temp_image_path, 'rgba')
 
-	if temp_frame_paths:
-		with tqdm(total = len(temp_frame_paths), desc = translator.get('processing'), unit = 'frame', ascii = ' =', disable = state_manager.get_item('log_level') in [ 'warn', 'error' ]) as progress:
-			progress.set_postfix(execution_providers = state_manager.get_item('execution_providers'))
-
-			with ThreadPoolExecutor(max_workers = state_manager.get_item('execution_thread_count')) as executor:
-				futures = []
-
-				for frame_number, temp_frame_path in enumerate(temp_frame_paths):
-					future = executor.submit(conditional_process_temp_frame, temp_frame_path, frame_number, output_video_fps)
-					futures.append(future)
-
-				for future in as_completed(futures):
-					if is_process_stopping():
-						for __future__ in futures:
-							__future__.cancel()
-
-					if not future.cancelled():
-						future.result()
-						progress.update()
-
-		for processor_module in get_processors_modules(state_manager.get_item('processors')):
-			processor_module.post_process()
-
-		if is_process_stopping():
-			return 4
-	else:
-		logger.error(translator.get('temp_frames_not_found'), __name__)
+	if target_vision_frame is None:
+		logger.error(translator.get('target_vision_frame_not_found'), __name__)
 		return 1
+
+	temp_vision_frame = target_vision_frame.copy()
+	temp_vision_mask = extract_vision_mask(temp_vision_frame)
+
+	if source_audio_frame is None or not numpy.any(source_audio_frame):
+		source_audio_frame = create_empty_audio_frame()
+	if source_voice_frame is None or not numpy.any(source_voice_frame):
+		source_voice_frame = create_empty_audio_frame()
+
+	for processor_module in get_processors_modules(state_manager.get_item('processors')):
+		logger.info(translator.get('processing'), processor_module.__name__)
+
+		temp_vision_frame, temp_vision_mask = processor_module.process_frame(
+		{
+			'reference_vision_frame': reference_vision_frame,
+			'source_vision_frames': source_vision_frames,
+			'source_audio_frame': source_audio_frame,
+			'source_voice_frame': source_voice_frame,
+			'target_vision_frame': target_vision_frame[:, :, :3],
+			'temp_vision_frame': temp_vision_frame[:, :, :3],
+			'temp_vision_mask': temp_vision_mask
+		})
+
+		processor_module.post_process()
+
+	temp_vision_frame = conditional_merge_vision_mask(temp_vision_frame, temp_vision_mask)
+	write_image(temp_image_path, temp_vision_frame)
+
+	if is_process_stopping():
+		return 4
 	return 0
 
 
-def merge_video() -> ErrorCode:
-	target_path = state_manager.get_item('target_path')
-	output_video_fps = state_manager.get_item('output_video_fps')
-	output_video_resolution = scale_resolution(detect_image_resolution(state_manager.get_item('target_path')), state_manager.get_item('output_image_scale'))
-	temp_video_fps = 25
-	trim_frame_start, trim_frame_end = state_manager.get_item('trim_frame_start'), state_manager.get_item('trim_frame_end')
+def finalize_image(start_time : float) -> ErrorCode:
+	output_image_resolution = scale_resolution(detect_image_resolution(state_manager.get_item('target_path')), state_manager.get_item('output_image_scale'))
 
-	logger.info(translator.get('merging_video').format(resolution = pack_resolution(output_video_resolution), fps = output_video_fps), __name__)
-	if ffmpeg.merge_video(target_path, temp_video_fps, output_video_resolution, output_video_fps, trim_frame_start, trim_frame_end):
-		logger.debug(translator.get('merging_video_succeeded'), __name__)
+	logger.info(translator.get('finalizing_image').format(resolution = pack_resolution(output_image_resolution)), __name__)
+	if ffmpeg.finalize_image(state_manager.get_item('target_path'), state_manager.get_item('output_path'), output_image_resolution):
+		logger.debug(translator.get('finalizing_image_succeeded'), __name__)
 	else:
-		if is_process_stopping():
-			return 4
-		logger.error(translator.get('merging_video_failed'), __name__)
-		return 1
-	return 0
+		logger.warn(translator.get('finalizing_image_skipped'), __name__)
 
-
-def replace_audio() -> ErrorCode:
-	source_audio_path = get_first(filter_audio_paths(state_manager.get_item('source_paths')))
-
-	if ffmpeg.replace_audio(state_manager.get_item('target_path'), source_audio_path, state_manager.get_item('output_path')):
-		logger.debug(translator.get('replacing_audio_succeeded'), __name__)
-	else:
-		if is_process_stopping():
-			return 4
-		logger.warn(translator.get('replacing_audio_skipped'), __name__)
-		temp_video_path = get_temp_file_path(state_manager.get_item('target_path'))
-		temp_video_path = os.path.splitext(temp_video_path)[0] + '.mp4'
-		move_file(temp_video_path, state_manager.get_item('output_path'))
-	return 0
-
-
-def finalize_video(start_time : float) -> ErrorCode:
 	logger.debug(translator.get('clearing_temp'), __name__)
 	clear_temp_directory(state_manager.get_item('target_path'))
 
-	if is_video(state_manager.get_item('output_path')):
-		logger.info(translator.get('processing_video_succeeded').format(seconds = calculate_end_time(start_time)), __name__)
+	if is_image(state_manager.get_item('output_path')):
+		logger.info(translator.get('processing_image_succeeded').format(seconds = calculate_end_time(start_time)), __name__)
 	else:
-		logger.error(translator.get('processing_video_failed'), __name__)
+		logger.error(translator.get('processing_image_failed'), __name__)
 		return 1
 	return 0
