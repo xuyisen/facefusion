@@ -9,29 +9,87 @@ from time import time
 import numpy
 from tqdm import tqdm
 
-from facefusion import benchmarker, cli_helper, content_analyser, face_classifier, face_detector, face_landmarker, face_masker, face_recognizer, hash_helper, logger, process_manager, state_manager, video_manager, voice_extractor, wording
-from facefusion.args import apply_args, collect_job_args, reduce_job_args, reduce_step_args
+from facefusion import (
+	benchmarker,
+	cli_helper,
+	content_analyser,
+	face_classifier,
+	face_detector,
+	face_landmarker,
+	face_masker,
+	face_recognizer,
+	hash_helper,
+	logger,
+	process_manager,
+	state_manager,
+	video_manager,
+	voice_extractor,
+	wording,
+)
+from facefusion.args import (
+	apply_args,
+	collect_job_args,
+	reduce_job_args,
+	reduce_step_args,
+)
 from facefusion.audio import create_empty_audio_frame, get_audio_frame, get_voice_frame
 from facefusion.common_helper import get_first
 from facefusion.content_analyser import analyse_image, analyse_video
-from facefusion.download import conditional_download_hashes, conditional_download_sources
+from facefusion.download import (
+	conditional_download_hashes,
+	conditional_download_sources,
+)
 from facefusion.exit_helper import hard_exit, signal_exit
 from facefusion.face_analyser import get_average_face, get_many_faces, get_one_face
 from facefusion.face_selector import sort_and_filter_faces
-from facefusion.face_store import append_reference_face, clear_reference_faces, get_reference_faces
-from facefusion.ffmpeg import copy_image, extract_frames, finalize_image, merge_video, replace_audio, restore_audio
-from facefusion.filesystem import filter_audio_paths, get_file_name, is_image, is_video, resolve_file_paths, resolve_file_pattern
+from facefusion.face_store import (
+	append_reference_face,
+	clear_reference_faces,
+	get_reference_faces,
+)
+from facefusion.ffmpeg import (
+	copy_image,
+	extract_frames,
+	finalize_image,
+	merge_video,
+	replace_audio,
+	restore_audio,
+)
+from facefusion.filesystem import (
+	filter_audio_paths,
+	get_file_name,
+	is_image,
+	is_video,
+	resolve_file_paths,
+	resolve_file_pattern,
+)
 from facefusion.jobs import job_helper, job_manager, job_runner
 from facefusion.jobs.job_list import compose_job_list
 from facefusion.memory import limit_system_memory
 from facefusion.processors.core import get_processors_modules
-from facefusion.processors.types import ProcessorInputs
 from facefusion.program import create_program
 from facefusion.program_helper import validate_args
-from facefusion.temp_helper import clear_temp_directory, create_temp_directory, get_temp_file_path, move_temp_file, resolve_temp_frame_paths
+from facefusion.temp_helper import (
+	clear_temp_directory,
+	create_temp_directory,
+	get_temp_file_path,
+	move_temp_file,
+	resolve_temp_frame_paths,
+)
 from facefusion.time_helper import calculate_end_time
-from facefusion.types import Args, ErrorCode, VisionFrame
-from facefusion.vision import pack_resolution, read_image, read_static_images, read_video_frame, restrict_image_resolution, restrict_trim_frame, restrict_video_fps, restrict_video_resolution, unpack_resolution, write_image
+from facefusion.types import Args, ErrorCode
+from facefusion.vision import (
+	pack_resolution,
+	read_image,
+	read_static_images,
+	read_video_frame,
+	restrict_image_resolution,
+	restrict_trim_frame,
+	restrict_video_fps,
+	restrict_video_resolution,
+	unpack_resolution,
+	write_image,
+)
 
 
 def cli() -> None:
